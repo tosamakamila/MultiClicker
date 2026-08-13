@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-MultiClicker - 多位置循环点击器
-录制多个屏幕位置,依次循环定时点击。
+MultiClicker - 循环点击 + 连点器
+多位置循环定时点击 / 单点快速连击。
 
 热键:
-  F8   录制当前鼠标位置
-  F9   开始 / 停止(带倒计时)
-  F10  清空位置列表
+  F8   录制位置(循环模式:加入列表;连点模式:设定固定点)
+  F9   开始 / 停止
+  F10  清空(循环模式:清空列表;连点模式:清除固定点)
   ESC  紧急停止 / 取消倒计时
 """
 
@@ -26,11 +26,11 @@ APP_NAME = "MultiClicker"
 CONFIG_PATH = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
                            APP_NAME, "config.json")
 
-# ---------- 配色(浅色暖色调) ----------
-BG          = "#f8f3ea"
+# ---------- 配色(白色主题) ----------
+BG          = "#f5f5f7"
 CARD        = "#ffffff"
-CARD2       = "#f3ecdf"
-BORDER      = "#e6dac4"
+CARD2       = "#ececf0"
+BORDER      = "#e0e0e6"
 ACCENT      = "#e8824f"
 ACCENT_HOV  = "#d96f3d"
 GREEN       = "#3f9d6e"
@@ -38,9 +38,9 @@ GREEN_DIM   = "#e6f3ec"
 AMBER       = "#e0a03c"
 AMBER_DIM   = "#f9efdb"
 RED         = "#de5c5c"
-TEXT        = "#433b30"
-TEXT2       = "#857a6b"
-TEXT3       = "#b3a793"
+TEXT        = "#3a3a40"
+TEXT2       = "#7a7a85"
+TEXT3       = "#b0b0b8"
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -55,7 +55,7 @@ def beep(freq=880, ms=80):
 
 
 class PositionCard(ctk.CTkFrame):
-    """单个位置卡片,支持高亮当前点击项"""
+    """循环模式:单个位置卡片,支持高亮当前点击项"""
 
     def __init__(self, master, index, pos, app):
         super().__init__(master, fg_color=CARD2, corner_radius=10, height=44)
@@ -114,16 +114,18 @@ class PositionCard(ctk.CTkFrame):
 class MultiClickerApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("MultiClicker · 多位置循环点击器")
-        self.geometry("780x600")
-        self.minsize(700, 520)
+        self.title("MultiClicker · 循环点击 / 连点器")
+        self.geometry("780x640")
+        self.minsize(720, 560)
         self.configure(fg_color=BG)
 
         self.positions = []
         self.cards = []
+        self.fixed_pos = None           # 连点模式固定位置
         self.clicking = False
-        self.countdown = None          # 剩余倒计时秒数,None 表示未倒计时
+        self.countdown = None
         self.total_clicks = 0
+        self.spam_start_time = 0.0
         self.topmost = ctk.BooleanVar(value=False)
         self.mouse_ctrl = mouse.Controller()
 
@@ -138,6 +140,8 @@ class MultiClickerApp(ctk.CTk):
         self.settings = {
             "interval": 2.0, "round_wait": 5.0, "start_delay": 3,
             "button": "左键", "click_type": "单击",
+            "spam_interval_ms": 50, "spam_max": 0,
+            "spam_pos_mode": "跟随鼠标", "spam_button": "左键",
         }
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -161,7 +165,7 @@ class MultiClickerApp(ctk.CTk):
 
         ctk.CTkLabel(header, text="⚡ MultiClicker", font=("Segoe UI", 21, "bold"),
                      text_color=TEXT).pack(side="left")
-        ctk.CTkLabel(header, text="多位置循环点击", font=("Microsoft YaHei UI", 12),
+        ctk.CTkLabel(header, text="循环点击 / 连点器", font=("Microsoft YaHei UI", 12),
                      text_color=TEXT3).pack(side="left", padx=(10, 0), pady=(8, 0))
 
         self.status_badge = ctk.CTkLabel(header, text="●  空闲", width=104, height=30,
@@ -174,11 +178,47 @@ class MultiClickerApp(ctk.CTk):
                                          font=("Consolas", 12), text_color=TEXT2)
         self.cursor_label.pack(side="right", padx=6)
 
-        # 主体
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=20, pady=(8, 4))
+        # 模式切换
+        self.tabs = ctk.CTkTabview(self, fg_color="transparent", corner_radius=14)
+        self.tabs.pack(fill="both", expand=True, padx=20, pady=(8, 4))
+        self.tab_loop = self.tabs.add("🔄  循环点击")
+        self.tab_spam = self.tabs.add("⚡  连点器")
+        self._build_loop_tab(self.tab_loop)
+        self._build_spam_tab(self.tab_spam)
 
-        # 左侧:位置列表
+        # 底部:统计 + 日志
+        bottom = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
+        bottom.pack(fill="x", padx=20, pady=(4, 4))
+
+        lh2 = ctk.CTkFrame(bottom, fg_color="transparent")
+        lh2.pack(fill="x", padx=16, pady=(8, 0))
+        ctk.CTkLabel(lh2, text="日志", font=("Microsoft YaHei UI", 12, "bold"),
+                     text_color=TEXT2).pack(side="left")
+        self.stats_label = ctk.CTkLabel(lh2, text="", font=("Microsoft YaHei UI", 11),
+                                        text_color=TEXT3)
+        self.stats_label.pack(side="right")
+        self.log_box = ctk.CTkTextbox(bottom, height=64, fg_color=BG, corner_radius=8,
+                                      font=("Consolas", 11), wrap="word")
+        self.log_box.pack(fill="x", padx=12, pady=(4, 10))
+
+        # 底部:热键说明栏
+        hotbar = ctk.CTkFrame(self, fg_color="transparent")
+        hotbar.pack(fill="x", padx=20, pady=(0, 14))
+        ctk.CTkLabel(hotbar, text="操作键:", font=("Microsoft YaHei UI", 12, "bold"),
+                     text_color=TEXT2).pack(side="left", padx=(2, 8))
+        for key, desc in (("F8", "录制位置"), ("F9", "开始 / 停止"), ("F10", "清空"), ("ESC", "紧急停止")):
+            cap = ctk.CTkFrame(hotbar, fg_color=CARD2, corner_radius=8)
+            cap.pack(side="left", padx=4)
+            ctk.CTkLabel(cap, text=key, font=("Consolas", 12, "bold"),
+                         text_color=ACCENT, width=40).pack(side="left", padx=(6, 2), pady=3)
+            ctk.CTkLabel(cap, text=desc, font=("Microsoft YaHei UI", 11),
+                         text_color=TEXT2).pack(side="left", padx=(0, 8))
+
+    # ---------- 循环点击页 ----------
+    def _build_loop_tab(self, tab):
+        body = ctk.CTkFrame(tab, fg_color="transparent")
+        body.pack(fill="both", expand=True, pady=6)
+
         left = ctk.CTkFrame(body, fg_color=CARD, corner_radius=14)
         left.pack(side="left", fill="both", expand=True)
 
@@ -198,7 +238,6 @@ class MultiClickerApp(ctk.CTk):
         self.list_frame.pack(fill="both", expand=True, padx=12, pady=(4, 12))
         self._show_empty_hint()
 
-        # 右侧:设置
         right = ctk.CTkFrame(body, fg_color=CARD, corner_radius=14, width=250)
         right.pack(side="right", fill="y", padx=(12, 0))
         right.pack_propagate(False)
@@ -252,45 +291,91 @@ class MultiClickerApp(ctk.CTk):
                         corner_radius=5, fg_color=ACCENT, hover_color=ACCENT_HOV,
                         border_color=BORDER, border_width=2).pack(padx=16, pady=(14, 0), anchor="w")
 
-        # 开始按钮
-        self.toggle_btn = ctk.CTkButton(right, text="▶  开始点击  (F9)", height=46,
-                                        corner_radius=10, fg_color=ACCENT,
-                                        hover_color=ACCENT_HOV, text_color="#ffffff",
-                                        font=("Microsoft YaHei UI", 15, "bold"),
-                                        command=self.toggle_clicking)
-        self.toggle_btn.pack(fill="x", padx=16, pady=(18, 6))
+        self.loop_toggle_btn = ctk.CTkButton(right, text="▶  开始点击  (F9)", height=46,
+                                             corner_radius=10, fg_color=ACCENT,
+                                             hover_color=ACCENT_HOV, text_color="#ffffff",
+                                             font=("Microsoft YaHei UI", 15, "bold"),
+                                             command=self.toggle_clicking)
+        self.loop_toggle_btn.pack(fill="x", padx=16, pady=(18, 14))
 
-        self.stats_label = ctk.CTkLabel(right, text="本轮 0 / 0  ·  总点击 0",
-                                        font=("Microsoft YaHei UI", 11), text_color=TEXT3)
-        self.stats_label.pack(pady=(0, 8))
+    # ---------- 连点器页 ----------
+    def _build_spam_tab(self, tab):
+        card = ctk.CTkFrame(tab, fg_color=CARD, corner_radius=14)
+        card.pack(fill="both", expand=True, pady=6)
 
-        # 底部:日志
-        logf = ctk.CTkFrame(self, fg_color=CARD, corner_radius=14)
-        logf.pack(fill="x", padx=20, pady=(4, 16))
-        lh2 = ctk.CTkFrame(logf, fg_color="transparent")
-        lh2.pack(fill="x", padx=16, pady=(8, 0))
-        ctk.CTkLabel(lh2, text="日志", font=("Microsoft YaHei UI", 12, "bold"),
+        ctk.CTkLabel(card, text="连点设置", font=("Microsoft YaHei UI", 16, "bold"),
+                     text_color=TEXT).pack(padx=24, pady=(20, 12), anchor="w")
+
+        # 位置模式
+        ctk.CTkLabel(card, text="点击位置", font=("Microsoft YaHei UI", 13),
+                     text_color=TEXT2).pack(padx=24, anchor="w")
+        self.spam_pos_var = ctk.StringVar(value=self.settings["spam_pos_mode"])
+        ctk.CTkSegmentedButton(card, values=["跟随鼠标", "固定位置"], variable=self.spam_pos_var,
+                               height=34, font=("Microsoft YaHei UI", 13),
+                               fg_color=CARD2, selected_color=ACCENT,
+                               selected_hover_color=ACCENT_HOV,
+                               unselected_color=CARD2, unselected_hover_color=BORDER,
+                               text_color=TEXT2).pack(padx=24, pady=(4, 8), anchor="w")
+
+        # 固定位置
+        self.fixed_row = ctk.CTkFrame(card, fg_color=CARD2, corner_radius=10)
+        self.fixed_row.pack(fill="x", padx=24, pady=(0, 8))
+        self.fixed_label = ctk.CTkLabel(self.fixed_row, text="未设置固定位置",
+                                        font=("Microsoft YaHei UI", 12), text_color=TEXT3)
+        self.fixed_label.pack(side="left", padx=12, pady=8)
+        ctk.CTkButton(self.fixed_row, text="设定 (F8)", width=92, height=26, corner_radius=8,
+                      fg_color=ACCENT, hover_color=ACCENT_HOV, text_color="#ffffff",
+                      font=("Microsoft YaHei UI", 12), command=self.record_fixed_pos).pack(side="right", padx=6)
+
+        # 间隔 / 次数
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=24, pady=6)
+        ctk.CTkLabel(row, text="点击间隔(毫秒)", font=("Microsoft YaHei UI", 13),
                      text_color=TEXT2).pack(side="left")
-        ctk.CTkButton(lh2, text="清空", width=52, height=22, corner_radius=6,
-                      fg_color="transparent", hover_color=BORDER, text_color=TEXT3,
-                      font=("Microsoft YaHei UI", 11),
-                      command=lambda: self.log_box.delete("1.0", "end")).pack(side="right")
-        self.log_box = ctk.CTkTextbox(logf, height=74, fg_color=BG, corner_radius=8,
-                                      font=("Consolas", 11), wrap="word")
-        self.log_box.pack(fill="x", padx=12, pady=10)
+        self.spam_interval_var = ctk.StringVar(value=str(self.settings["spam_interval_ms"]))
+        ctk.CTkEntry(row, textvariable=self.spam_interval_var, width=80, height=32,
+                     justify="center", fg_color=CARD2, border_color=BORDER, border_width=1,
+                     font=("Consolas", 13, "bold"), text_color=TEXT).pack(side="right")
+        ctk.CTkLabel(row, text="ms(10=每秒约100次)", font=("Microsoft YaHei UI", 11),
+                     text_color=TEXT3).pack(side="right", padx=(0, 8))
 
-        # 底部:热键说明栏(始终可见)
-        hotbar = ctk.CTkFrame(self, fg_color="transparent")
-        hotbar.pack(fill="x", padx=20, pady=(0, 14))
-        ctk.CTkLabel(hotbar, text="操作键:", font=("Microsoft YaHei UI", 12, "bold"),
-                     text_color=TEXT2).pack(side="left", padx=(2, 8))
-        for key, desc in (("F8", "录制位置"), ("F9", "开始 / 停止"), ("F10", "清空列表"), ("ESC", "紧急停止")):
-            cap = ctk.CTkFrame(hotbar, fg_color=CARD2, corner_radius=8)
-            cap.pack(side="left", padx=4)
-            ctk.CTkLabel(cap, text=key, font=("Consolas", 12, "bold"),
-                         text_color=ACCENT, width=40).pack(side="left", padx=(6, 2), pady=3)
-            ctk.CTkLabel(cap, text=desc, font=("Microsoft YaHei UI", 11),
-                         text_color=TEXT2).pack(side="left", padx=(0, 8))
+        row2 = ctk.CTkFrame(card, fg_color="transparent")
+        row2.pack(fill="x", padx=24, pady=6)
+        ctk.CTkLabel(row2, text="点击次数(0=无限)", font=("Microsoft YaHei UI", 13),
+                     text_color=TEXT2).pack(side="left")
+        self.spam_max_var = ctk.StringVar(value=str(self.settings["spam_max"]))
+        ctk.CTkEntry(row2, textvariable=self.spam_max_var, width=80, height=32,
+                     justify="center", fg_color=CARD2, border_color=BORDER, border_width=1,
+                     font=("Consolas", 13, "bold"), text_color=TEXT).pack(side="right")
+
+        row3 = ctk.CTkFrame(card, fg_color="transparent")
+        row3.pack(fill="x", padx=24, pady=6)
+        ctk.CTkLabel(row3, text="鼠标按键", font=("Microsoft YaHei UI", 13),
+                     text_color=TEXT2).pack(side="left")
+        self.spam_button_var = ctk.StringVar(value=self.settings["spam_button"])
+        ctk.CTkSegmentedButton(row3, values=["左键", "右键"], variable=self.spam_button_var,
+                               height=30, font=("Microsoft YaHei UI", 12),
+                               fg_color=CARD2, selected_color=ACCENT,
+                               selected_hover_color=ACCENT_HOV,
+                               unselected_color=CARD2, unselected_hover_color=BORDER,
+                               text_color=TEXT2).pack(side="right")
+
+        ctk.CTkCheckBox(card, text="窗口置顶", variable=self.topmost,
+                        command=self._toggle_topmost, font=("Microsoft YaHei UI", 12),
+                        text_color=TEXT2, checkbox_width=20, checkbox_height=20,
+                        corner_radius=5, fg_color=ACCENT, hover_color=ACCENT_HOV,
+                        border_color=BORDER, border_width=2).pack(padx=24, pady=(14, 0), anchor="w")
+
+        self.spam_toggle_btn = ctk.CTkButton(card, text="▶  开始连点  (F9)", height=50,
+                                             corner_radius=10, fg_color=ACCENT,
+                                             hover_color=ACCENT_HOV, text_color="#ffffff",
+                                             font=("Microsoft YaHei UI", 15, "bold"),
+                                             command=self.toggle_clicking)
+        self.spam_toggle_btn.pack(fill="x", padx=24, pady=(18, 10))
+
+        tip = ctk.CTkLabel(card, text="提示:连点器立即开始,无倒计时;运行中按 ESC 或 F9 停止",
+                           font=("Microsoft YaHei UI", 11), text_color=TEXT3)
+        tip.pack(pady=(0, 16))
 
     def _show_empty_hint(self):
         hint = ctk.CTkFrame(self.list_frame, fg_color="transparent")
@@ -320,6 +405,9 @@ class MultiClickerApp(ctk.CTk):
         except Exception:
             pass
         self.after(60, self._tick_cursor)
+
+    def _current_tab(self):
+        return self.tabs.get()
 
     # ---------------- 位置管理 ----------------
     def record_position(self):
@@ -355,8 +443,23 @@ class MultiClickerApp(ctk.CTk):
                 card.pack(fill="x", pady=3)
                 self.cards.append(card)
 
-    # ---------------- 设置解析 ----------------
-    def _read_settings(self):
+    def record_fixed_pos(self):
+        if self.clicking or self.countdown is not None:
+            self.log("请先停止当前任务再设定", RED)
+            return
+        self.fixed_pos = self.mouse_ctrl.position
+        self.fixed_label.configure(text=f"固定位置: ({self.fixed_pos[0]}, {self.fixed_pos[1]})",
+                                   text_color=TEXT)
+        self.log(f"已设定固定位置 ({self.fixed_pos[0]}, {self.fixed_pos[1]})", GREEN)
+        beep(990, 60)
+
+    def clear_fixed_pos(self):
+        self.fixed_pos = None
+        self.fixed_label.configure(text="未设置固定位置", text_color=TEXT3)
+        self.log("已清除固定位置")
+
+    # ---------------- 读取设置 ----------------
+    def _read_loop_settings(self):
         try:
             interval = float(self.interval_var.get())
             round_wait = float(self.round_var.get())
@@ -379,6 +482,30 @@ class MultiClickerApp(ctk.CTk):
         self._save_settings()
         return cfg
 
+    def _read_spam_settings(self):
+        try:
+            ms = float(self.spam_interval_var.get())
+            maxn = int(float(self.spam_max_var.get()))
+        except ValueError:
+            self.log("间隔/次数必须填写数字", RED)
+            return None
+        if self.spam_pos_var.get() == "固定位置" and self.fixed_pos is None:
+            self.log("请先设定固定位置(F8)", RED)
+            return None
+        cfg = {
+            "interval": max(0.005, ms / 1000.0),
+            "max_clicks": max(0, maxn),
+            "fixed": self.fixed_pos if self.spam_pos_var.get() == "固定位置" else None,
+            "left": self.spam_button_var.get() == "左键",
+        }
+        self.settings.update({
+            "spam_interval_ms": ms, "spam_max": maxn,
+            "spam_pos_mode": self.spam_pos_var.get(),
+            "spam_button": self.spam_button_var.get(),
+        })
+        self._save_settings()
+        return cfg
+
     # ---------------- 开始 / 停止 ----------------
     def toggle_clicking(self):
         if self.clicking:
@@ -387,20 +514,26 @@ class MultiClickerApp(ctk.CTk):
         if self.countdown is not None:
             self.cancel_countdown()
             return
-        if not self.positions:
-            self.log("请先录制至少一个位置", RED)
-            return
-        cfg = self._read_settings()
-        if not cfg:
-            return
-        self._start_countdown(cfg)
+        if self._current_tab() == "🔄  循环点击":
+            if not self.positions:
+                self.log("请先录制至少一个位置", RED)
+                return
+            cfg = self._read_loop_settings()
+            if not cfg:
+                return
+            self._start_countdown(cfg)
+        else:
+            cfg = self._read_spam_settings()
+            if not cfg:
+                return
+            self._launch_spam(cfg)
 
     def _start_countdown(self, cfg):
         if cfg["start_delay"] == 0:
-            self._launch(cfg)
+            self._launch_loop(cfg)
             return
         self.countdown = cfg["start_delay"]
-        self._set_countdown_ui(True)
+        self._set_loop_btn_countdown(True)
         self.set_status(f"●  倒计时 {self.countdown}", AMBER)
         beep(700, 50)
         self._countdown_tick(cfg)
@@ -410,51 +543,63 @@ class MultiClickerApp(ctk.CTk):
             return
         if self.countdown <= 0:
             self.countdown = None
-            self._set_countdown_ui(False)
-            self._launch(cfg)
+            self._set_loop_btn_countdown(False)
+            self._launch_loop(cfg)
             return
-        self.toggle_btn.configure(text=f"⏳ {self.countdown} 秒后开始(点击取消)")
+        self.loop_toggle_btn.configure(text=f"⏳ {self.countdown} 秒后开始(点击取消)")
         self.countdown -= 1
         self.after(1000, lambda: self._countdown_tick(cfg))
 
     def cancel_countdown(self):
         self.countdown = None
-        self._set_countdown_ui(False)
+        self._set_loop_btn_countdown(False)
         self.set_status("●  空闲", TEXT2)
         self.log("已取消")
 
-    def _set_countdown_ui(self, on):
+    def _set_loop_btn_countdown(self, on):
         if on:
-            self.toggle_btn.configure(fg_color=AMBER, hover_color=AMBER, text_color="#1a1a1a")
-            self.record_btn_state(False)
+            self.loop_toggle_btn.configure(fg_color=AMBER, hover_color=AMBER, text_color="#ffffff")
         else:
-            self.toggle_btn.configure(fg_color=ACCENT, hover_color=ACCENT_HOV,
-                                      text_color="#ffffff", text="▶  开始点击  (F9)")
-            self.record_btn_state(True)
+            self.loop_toggle_btn.configure(fg_color=ACCENT, hover_color=ACCENT_HOV,
+                                           text_color="#ffffff", text="▶  开始点击  (F9)")
 
-    def record_btn_state(self, state):
-        pass  # 录制按钮在刷新列表中重建,无需禁用
+    def _set_running_ui(self, running):
+        btn_text = "⏹  停止点击  (F9 / ESC)" if running else "▶  开始点击  (F9)"
+        fg, hov = (RED, "#e05a5a") if running else (ACCENT, ACCENT_HOV)
+        self.loop_toggle_btn.configure(text=btn_text, fg_color=fg, hover_color=hov)
+        self.spam_toggle_btn.configure(text="⏹  停止连点  (F9 / ESC)" if running else "▶  开始连点  (F9)",
+                                       fg_color=fg, hover_color=hov)
 
-    def _launch(self, cfg):
+    def _launch_loop(self, cfg):
         self.clicking = True
         self.total_clicks = 0
         self.set_status("●  运行中", GREEN)
-        self.toggle_btn.configure(text="⏹  停止点击  (F9 / ESC)", fg_color=RED,
-                                  hover_color="#e05a5a")
+        self._set_running_ui(True)
         self.log(f"开始循环 {len(self.positions)} 个位置 · 间隔 {cfg['interval']}s · "
                  f"整轮等待 {cfg['round_wait']}s", GREEN)
         self.stats_label.configure(text=f"本轮 0 / {len(self.positions)}  ·  总点击 0")
         threading.Thread(target=self._click_loop, args=(cfg,), daemon=True).start()
 
+    def _launch_spam(self, cfg):
+        self.clicking = True
+        self.total_clicks = 0
+        self.spam_start_time = time.time()
+        self.set_status("●  运行中", GREEN)
+        self._set_running_ui(True)
+        pos_desc = "跟随鼠标" if cfg["fixed"] is None else f"({cfg['fixed'][0]}, {cfg['fixed'][1]})"
+        self.log(f"开始连点 · 位置: {pos_desc} · 间隔 {cfg['interval'] * 1000:.0f}ms", GREEN)
+        self.stats_label.configure(text="CPS 0.0 · 总点击 0")
+        threading.Thread(target=self._spam_loop, args=(cfg,), daemon=True).start()
+
     def stop_clicking(self, reason=""):
         self.clicking = False
         self.set_status("●  空闲", TEXT2)
-        self.toggle_btn.configure(text="▶  开始点击  (F9)", fg_color=ACCENT,
-                                  hover_color=ACCENT_HOV, text_color="#ffffff")
+        self._set_running_ui(False)
         self._unhighlight_all()
         if reason:
             self.log(reason)
         self.log(f"本次共点击 {self.total_clicks} 次")
+        self.stats_label.configure(text=f"总点击 {self.total_clicks}")
 
     def emergency_stop(self):
         if self.clicking:
@@ -462,7 +607,7 @@ class MultiClickerApp(ctk.CTk):
         elif self.countdown is not None:
             self.cancel_countdown()
 
-    # ---------------- 点击循环 ----------------
+    # ---------------- 循环点击线程 ----------------
     def _click_loop(self, cfg):
         idx = 0
         while self.clicking:
@@ -492,6 +637,25 @@ class MultiClickerApp(ctk.CTk):
         for c in self.cards:
             c.highlight(False)
 
+    # ---------------- 连点线程 ----------------
+    def _spam_loop(self, cfg):
+        while self.clicking:
+            if cfg["fixed"] is not None:
+                self.mouse_ctrl.position = cfg["fixed"]
+            self._do_click(cfg["left"], False)
+            self.total_clicks += 1
+            if self.total_clicks % 5 == 0:
+                self.after(0, self._on_spam_done)
+            if cfg["max_clicks"] and self.total_clicks >= cfg["max_clicks"]:
+                self.after(0, lambda: self.stop_clicking("已完成设定次数"))
+                return
+            time.sleep(cfg["interval"])
+
+    def _on_spam_done(self):
+        dt = max(0.001, time.time() - self.spam_start_time)
+        cps = self.total_clicks / dt
+        self.stats_label.configure(text=f"CPS {cps:.1f} · 总点击 {self.total_clicks}")
+
     def _do_click(self, left, double):
         btn = mouse.Button.left if left else mouse.Button.right
         self.mouse_ctrl.click(btn, 1)
@@ -502,12 +666,24 @@ class MultiClickerApp(ctk.CTk):
     # ---------------- 热键 ----------------
     def _start_hotkeys(self):
         self.hotkeys = keyboard.GlobalHotKeys({
-            "<f8>": lambda: self.after(0, self.record_position),
+            "<f8>": lambda: self.after(0, self._hotkey_f8),
             "<f9>": lambda: self.after(0, self.toggle_clicking),
-            "<f10>": lambda: self.after(0, self.clear_positions),
+            "<f10>": lambda: self.after(0, self._hotkey_f10),
             "<esc>": lambda: self.after(0, self.emergency_stop),
         })
         self.hotkeys.start()
+
+    def _hotkey_f8(self):
+        if self._current_tab() == "🔄  循环点击":
+            self.record_position()
+        else:
+            self.record_fixed_pos()
+
+    def _hotkey_f10(self):
+        if self._current_tab() == "🔄  循环点击":
+            self.clear_positions()
+        else:
+            self.clear_fixed_pos()
 
     def on_closing(self):
         self.clicking = False
