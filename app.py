@@ -26,23 +26,23 @@ APP_NAME = "MultiClicker"
 CONFIG_PATH = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
                            APP_NAME, "config.json")
 
-# ---------- 配色 ----------
-BG          = "#0e1018"
-CARD        = "#161a26"
-CARD2       = "#1e2334"
-BORDER      = "#2a3045"
-ACCENT      = "#6366f1"
-ACCENT_HOV  = "#7c7ff5"
-GREEN       = "#34d399"
-GREEN_DIM   = "#1c2b26"
-AMBER       = "#fbbf24"
-AMBER_DIM   = "#2b241a"
-RED         = "#f87171"
-TEXT        = "#e2e8f0"
-TEXT2       = "#94a3b8"
-TEXT3       = "#64748b"
+# ---------- 配色(浅色暖色调) ----------
+BG          = "#f8f3ea"
+CARD        = "#ffffff"
+CARD2       = "#f3ecdf"
+BORDER      = "#e6dac4"
+ACCENT      = "#e8824f"
+ACCENT_HOV  = "#d96f3d"
+GREEN       = "#3f9d6e"
+GREEN_DIM   = "#e6f3ec"
+AMBER       = "#e0a03c"
+AMBER_DIM   = "#f9efdb"
+RED         = "#de5c5c"
+TEXT        = "#433b30"
+TEXT2       = "#857a6b"
+TEXT3       = "#b3a793"
 
-ctk.set_appearance_mode("dark")
+ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
 
@@ -104,7 +104,7 @@ class PositionCard(ctk.CTkFrame):
         if on:
             self.configure(fg_color=GREEN_DIM, border_width=2, border_color=GREEN)
             self.num.configure(text_color=GREEN)
-            self.coord.configure(text_color="#d1fae5")
+            self.coord.configure(text_color="#2f6b4f")
         else:
             self.configure(fg_color=CARD2, border_width=0)
             self.num.configure(text_color=ACCENT)
@@ -279,13 +279,26 @@ class MultiClickerApp(ctk.CTk):
                                       font=("Consolas", 11), wrap="word")
         self.log_box.pack(fill="x", padx=12, pady=10)
 
+        # 底部:热键说明栏(始终可见)
+        hotbar = ctk.CTkFrame(self, fg_color="transparent")
+        hotbar.pack(fill="x", padx=20, pady=(0, 14))
+        ctk.CTkLabel(hotbar, text="操作键:", font=("Microsoft YaHei UI", 12, "bold"),
+                     text_color=TEXT2).pack(side="left", padx=(2, 8))
+        for key, desc in (("F8", "录制位置"), ("F9", "开始 / 停止"), ("F10", "清空列表"), ("ESC", "紧急停止")):
+            cap = ctk.CTkFrame(hotbar, fg_color=CARD2, corner_radius=8)
+            cap.pack(side="left", padx=4)
+            ctk.CTkLabel(cap, text=key, font=("Consolas", 12, "bold"),
+                         text_color=ACCENT, width=40).pack(side="left", padx=(6, 2), pady=3)
+            ctk.CTkLabel(cap, text=desc, font=("Microsoft YaHei UI", 11),
+                         text_color=TEXT2).pack(side="left", padx=(0, 8))
+
     def _show_empty_hint(self):
         hint = ctk.CTkFrame(self.list_frame, fg_color="transparent")
         hint.pack(pady=52)
-        ctk.CTkLabel(hint, text="◎", font=("Segoe UI", 42), text_color=BORDER).pack()
+        ctk.CTkLabel(hint, text="◎", font=("Segoe UI", 42), text_color=ACCENT).pack()
         ctk.CTkLabel(hint, text="还没有点击位置", font=("Microsoft YaHei UI", 14, "bold"),
                      text_color=TEXT2).pack(pady=(6, 2))
-        ctk.CTkLabel(hint, text="把鼠标移到目标处,按 F8 录制\n或点击右上角「＋ 录制位置」",
+        ctk.CTkLabel(hint, text="把鼠标移到目标处,按 F8 录制(可录多个)\n全部录好后,按 F9 开始循环点击",
                      font=("Microsoft YaHei UI", 12), text_color=TEXT3,
                      justify="center").pack()
 
